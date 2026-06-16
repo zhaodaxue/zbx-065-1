@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   MapPin,
   Droplets,
@@ -9,8 +9,9 @@ import {
   Waves,
   Percent,
   Calculator as CalculatorIcon,
+  AlertTriangle,
 } from 'lucide-react';
-import type { SoilType, CalculatorResult } from '../types';
+import type { SoilType, CalculatorResult, SavedScheme, SchemeStoreState } from '../types';
 import { calculateSeepage } from '../utils/calculator';
 import {
   validateArea,
@@ -18,10 +19,21 @@ import {
   validateDuration,
   hasErrors,
 } from '../utils/validation';
+import {
+  loadSchemes,
+  addScheme,
+  renameScheme,
+  deleteScheme,
+  schemeToInput,
+  canAddScheme,
+  MAX_SCHEMES,
+} from '../utils/schemeStore';
 import InputField from './InputField';
 import SelectField from './SelectField';
 import ResultCard from './ResultCard';
 import FormulaInfo from './FormulaInfo';
+import SchemeList from './SchemeList';
+import SchemeCompareView from './SchemeCompareView';
 
 const soilOptions = [
   { value: 'sand', label: '砂质土', description: '渗漏系数 1.2 mm/h' },
@@ -40,6 +52,20 @@ export default function Calculator() {
     soilType: false,
     duration: false,
   });
+
+  const [storeState, setStoreState] = useState<SchemeStoreState>(() => ({
+    schemes: [],
+    version: 1,
+  }));
+  const [storeCorrupted, setStoreCorrupted] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [saveError, setSaveError] = useState<string | undefined>();
+
+  useEffect(() => {
+    const { state, corrupted } = loadSchemes();
+    setStoreState(state);
+    setStoreCorrupted(corrupted);
+  }, []);
 
   const area = areaStr ? parseFloat(areaStr) : null;
   const depth = depthStr ? parseFloat(depthStr) : null;
@@ -66,6 +92,8 @@ export default function Calculator() {
     return calculateSeepage(area, depth, soilType, duration);
   }, [isValid, area, depth, soilType, duration]);
 
+  const canSave = isValid && canAddScheme(storeState);
+
   const handleClear = () => {
     setAreaStr('');
     setDepthStr('');
@@ -79,9 +107,99 @@ export default function Calculator() {
     });
   };
 
+  const handleSaveScheme = useCallback(
+    (name: string) => {
+      if (
+        area === null ||
+        depth === null ||
+        duration === null ||
+        !isValid
+      ) {
+        setSaveError('参数无效，无法保存');
+        return;
+      }
+      const { state, error } = addScheme(storeState, {
+        name,
+        area,
+        depth,
+        soilType,
+        duration,
+      });
+      if (error) {
+        setSaveError(error);
+        return;
+      }
+      setSaveError(undefined);
+      setStoreState(state);
+    },
+    [storeState, area, depth, soilType, duration, isValid]
+  );
+
+  const handleRenameScheme = useCallback(
+    (id: string, name: string) => {
+      const { state, error } = renameScheme(storeState, id, name);
+      if (error) {
+        setSaveError(error);
+        return;
+      }
+      setSaveError(undefined);
+      setStoreState(state);
+    },
+    [storeState]
+  );
+
+  const handleDeleteScheme = useCallback(
+    (id: string) => {
+      const newState = deleteScheme(storeState, id);
+      setStoreState(newState);
+      setSelectedIds((prev) => prev.filter((sid) => sid !== id));
+      setSaveError(undefined);
+    },
+    [storeState]
+  );
+
+  const handleToggleSelect = useCallback(
+    (id: string) => {
+      setSelectedIds((prev) => {
+        if (prev.includes(id)) {
+          return prev.filter((sid) => sid !== id);
+        }
+        if (prev.length >= 3) {
+          return prev;
+        }
+        return [...prev, id];
+      });
+    },
+    []
+  );
+
+  const handleLoadScheme = useCallback((scheme: SavedScheme) => {
+    const input = schemeToInput(scheme);
+    setAreaStr(String(input.area));
+    setDepthStr(String(input.depth));
+    setSoilType(input.soilType);
+    setDurationStr(String(input.duration));
+    setTouched({
+      area: true,
+      depth: true,
+      soilType: true,
+      duration: true,
+    });
+  }, []);
+
+  const selectedSchemes = useMemo(
+    () =>
+      selectedIds
+        .map((id) => storeState.schemes.find((s) => s.id === id))
+        .filter((s): s is SavedScheme => s !== undefined),
+    [selectedIds, storeState.schemes]
+  );
+
+  const dismissCorruptedNotice = () => setStoreCorrupted(false);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-stone-50 to-amber-50">
-      <div className="container mx-auto px-4 py-8 md:py-12 max-w-5xl">
+      <div className="container mx-auto px-4 py-8 md:py-12 max-w-6xl">
         <div className="text-center mb-8 md:mb-12">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-600 text-white mb-4 shadow-lg shadow-emerald-200">
             <Droplets className="w-8 h-8" />
@@ -94,8 +212,28 @@ export default function Calculator() {
           </p>
         </div>
 
-        <div className="grid md:grid-cols-5 gap-6">
-          <div className="md:col-span-3 space-y-6">
+        {storeCorrupted && (
+          <div className="mb-6 p-4 rounded-xl bg-amber-50 border border-amber-200 flex items-start gap-3 max-w-2xl mx-auto">
+            <AlertTriangle className="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-amber-800">
+                本地数据损坏，已清空方案库
+              </p>
+              <p className="text-xs text-amber-600 mt-0.5">
+                检测到存储数据格式异常，为保障使用安全已重置。您可以重新创建方案。
+              </p>
+            </div>
+            <button
+              onClick={dismissCorruptedNotice}
+              className="text-amber-500 hover:text-amber-700 text-xs px-2 py-1 rounded hover:bg-amber-100 transition-colors"
+            >
+              知道了
+            </button>
+          </div>
+        )}
+
+        <div className="grid lg:grid-cols-5 gap-6">
+          <div className="lg:col-span-3 space-y-6">
             <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-6">
               <h2 className="text-lg font-semibold text-stone-800 mb-5 flex items-center gap-2">
                 <Layers className="w-5 h-5 text-emerald-600" />
@@ -159,10 +297,22 @@ export default function Calculator() {
               </button>
             </div>
 
+            <SchemeList
+              schemes={storeState.schemes}
+              selectedIds={selectedIds}
+              canSave={canSave}
+              maxSchemes={MAX_SCHEMES}
+              saveError={saveError}
+              onSave={handleSaveScheme}
+              onRename={handleRenameScheme}
+              onDelete={handleDeleteScheme}
+              onToggleSelect={handleToggleSelect}
+            />
+
             <FormulaInfo />
           </div>
 
-          <div className="md:col-span-2">
+          <div className="lg:col-span-2 space-y-6">
             <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-6 sticky top-6">
               <h2 className="text-lg font-semibold text-stone-800 mb-5 flex items-center gap-2">
                 <TrendingDown className="w-5 h-5 text-emerald-600" />
@@ -225,6 +375,11 @@ export default function Calculator() {
                 </div>
               )}
             </div>
+
+            <SchemeCompareView
+              selectedSchemes={selectedSchemes}
+              onLoadScheme={handleLoadScheme}
+            />
           </div>
         </div>
 

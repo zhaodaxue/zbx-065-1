@@ -25,3 +25,18 @@ export interface ValidationErrors {
   soilType?: string;
   duration?: string;
 }
+
+export interface SavedScheme {
+  id: string;
+  name: string;
+  area: number;
+  depth: number;
+  soilType: SoilType;
+  duration: number;
+  createdAt: number;
+}
+
+export interface SchemeStoreState {
+  schemes: SavedScheme[];
+  version: number;
+}
